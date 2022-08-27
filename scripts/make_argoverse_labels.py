@@ -16,11 +16,75 @@ from src.data.utils import get_visible_mask, get_occlusion_mask, \
     encode_binary_labels
 from src.data.argoverse.utils import get_object_masks, get_map_mask
 
+from scipy.io import loadmat
+
+colors = loadmat(os.getcwd() + '/scripts/data/color150.mat')['colors']
+
+def unique(ar, return_index=False, return_inverse=False, return_counts=False):
+    ar = np.asanyarray(ar).flatten()
+
+    optional_indices = return_index or return_inverse
+    optional_returns = optional_indices or return_counts
+
+    if ar.size == 0:
+        if not optional_returns:
+            ret = ar
+        else:
+            ret = (ar,)
+            if return_index:
+                ret += (np.empty(0, np.bool),)
+            if return_inverse:
+                ret += (np.empty(0, np.bool),)
+            if return_counts:
+                ret += (np.empty(0, np.intp),)
+        return ret
+    if optional_indices:
+        perm = ar.argsort(kind='mergesort' if return_index else 'quicksort')
+        aux = ar[perm]
+    else:
+        ar.sort()
+        aux = ar
+    flag = np.concatenate(([True], aux[1:] != aux[:-1]))
+
+    if not optional_returns:
+        ret = aux[flag]
+    else:
+        ret = (aux[flag],)
+        if return_index:
+            ret += (perm[flag],)
+        if return_inverse:
+            iflag = np.cumsum(flag) - 1
+            inv_idx = np.empty(ar.shape, dtype=np.intp)
+            inv_idx[perm] = iflag
+            ret += (inv_idx,)
+        if return_counts:
+            idx = np.concatenate(np.nonzero(flag) + ([ar.size],))
+            ret += (np.diff(idx),)
+    return ret
+
+
+def colorEncode(labelmap, colors, mode='RGB'):
+    labelmap = labelmap.astype('int')
+    labelmap_rgb = np.zeros((labelmap.shape[0], labelmap.shape[1], 3),
+                            dtype=np.uint8)
+    for label in unique(labelmap):
+        if label < 0:
+            continue
+        labelmap_rgb += (labelmap == label)[:, :, np.newaxis] * \
+            np.tile(colors[label],
+                    (labelmap.shape[0], labelmap.shape[1], 1))
+
+    if mode == 'BGR':
+        return labelmap_rgb[:, :, ::-1]
+    else:
+        return labelmap_rgb
+
+
 
 def process_split(split, map_data, config):
 
     # Create an Argoverse loader instance
-    path = os.path.join(os.path.expandvars(config.argoverse.root), split)
+    path = os.path.join(os.path.expandvars(config.dataroot), split)
     print("Loading Argoverse tracking data at " + path)
     loader = ArgoverseTrackingLoader(path)
 
@@ -37,8 +101,8 @@ def process_scene(split, scene, map_data, config):
         max_value=len(RING_CAMERA_LIST) * scene.num_lidar_frame)
     
     # Iterate over each camera and each frame in the sequence
-    for camera in RING_CAMERA_LIST:
-        for frame in range(scene.num_lidar_frame):
+    for frame in range(scene.num_lidar_frame):
+        for camera in RING_CAMERA_LIST:
             progress.update(i)
             process_frame(split, scene, camera, frame, map_data, config)
             i += 1
@@ -68,9 +132,18 @@ def process_frame(split, scene, camera, frame, map_data, config):
     # Encode masks as an integer bitmask
     labels = encode_binary_labels(masks)
 
+    # Flip labels about z-axis since ego should be at bottom-center
+    labels = labels[::-1, :]
+
+    # idx_map = np.zeros(masks.shape[1:], dtype=np.uint8)
+    # for idx in range(masks.shape[0]):
+    #     idx_map[masks[idx] != False] = idx + 1
+    # color_labels = colorEncode(idx_map, colors)
+    # Image.fromarray(color_labels.astype(np.uint8)).save(f'/scratch/shantanu/{camera}_bev.png')
+
     # Create a filename and directory
     timestamp = str(scene.image_timestamp_list_sync[camera][frame])
-    output_path = os.path.join(config.argoverse.label_root, split, 
+    output_path = os.path.join(config.label_root, split, 
                                scene.current_log, camera, 
                                f'{camera}_{timestamp}.png')
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -87,7 +160,7 @@ if __name__ == '__main__':
     # Create an Argoverse map instance
     map_data = ArgoverseMap()
 
-    for split in ['train', 'val']:
+    for split in ['train1', 'train2', 'train3', 'train4', 'val']:
         process_split(split, map_data, config)
 
 
